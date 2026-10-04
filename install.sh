@@ -385,6 +385,9 @@ EOF
 
   write_service
 
+  step "Configurando watchdog…"
+  setup_watchdog
+
   step "Iniciando servicio…"
   systemctl restart "$SVC"
   sleep 2
@@ -604,6 +607,47 @@ uninstall() {
   nginx -s reload 2>/dev/null || true
   ok "Desinstalado"
   read -rp "  Presiona Enter…"
+}
+
+# ── Watchdog ─────────────────────────────────────────────────
+setup_watchdog() {
+  local WDOG="/root/ltmssh-watchdog.sh"
+  cat > "$WDOG" << 'WDEOF'
+#!/bin/bash
+# LTM SSH Watchdog — revisar cada 3 min vía cron
+LOG="/var/log/ltmssh-watchdog.log"
+TS="$(date '+%Y-%m-%d %H:%M:%S')"
+
+restart_if_dead() {
+  local svc="$1"
+  if ! systemctl is-active --quiet "$svc"; then
+    echo "[$TS] $svc caído — reiniciando..." >> "$LOG"
+    systemctl start "$svc"
+    sleep 3
+    if systemctl is-active --quiet "$svc"; then
+      echo "[$TS] $svc OK" >> "$LOG"
+    else
+      echo "[$TS] $svc FALLO al reiniciar" >> "$LOG"
+    fi
+  fi
+}
+
+restart_if_dead ltmssh
+restart_if_dead nginx
+
+# Mantener log bajo 500 líneas
+tail -500 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG" 2>/dev/null || true
+WDEOF
+  chmod +x "$WDOG"
+
+  # Cron cada 3 minutos
+  local cron_line="*/3 * * * * root $WDOG"
+  local cron_file="/etc/cron.d/ltmssh-watchdog"
+  echo "$cron_line" > "$cron_file"
+  chmod 644 "$cron_file"
+
+  ok "Watchdog instalado (corre cada 3 min)"
+  ok "Logs: /var/log/ltmssh-watchdog.log"
 }
 
 # ── Menú principal ────────────────────────────────────────────
